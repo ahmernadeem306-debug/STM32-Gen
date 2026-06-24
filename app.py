@@ -83,8 +83,8 @@ def generate_code(mcu_name, project_desc, pins_text):
 
         elif "button" in func.lower() or "input" in func.lower():
             gpio_code += f""" /* {pin} Input Pull-up - Why Pull-up? External 10k resistor ki zaroorat nahi. Idle HIGH */
-  LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{pin_num}, LL_GPIO_MODE_INPUT);
-  LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{pin_num}, LL_GPIO_PULL_UP);\n"""
+  LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_INPUT);
+  LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
             wiring.append(f"Button: {pin} -> Tactile Button -> GND")
 
         elif "stepper" in func.lower() or "pwm" in func.lower():
@@ -95,8 +95,9 @@ def generate_code(mcu_name, project_desc, pins_text):
             includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
 
         if "interrupt" in desc_lower and "button" in func.lower():
+            apb2_bus = 'APB2_GRP1'
             gpio_code += f""" /* EXTI {num} - Why SYSCFG? GPIO ko EXTI line se connect karta hai */
-  LL_{'APB2_GRP1' if mcu['family']=='F1' else 'APB2_GRP1'}_EnableClock(LL_{'APB2_GRP1' if mcu['family']=='F1' else 'APB2_GRP1'}_PERIPH_SYSCFG);
+  LL_{apb2_bus}_EnableClock(LL_{apb2_bus}_PERIPH_SYSCFG);
   LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORT{port}, LL_SYSCFG_EXTI_LINE{num});
   LL_EXTI_EnableIT_0_31(LL_EXTI_LINE_{num}); // Why IT? Interrupt mode enable
   LL_EXTI_EnableFallingTrig_0_31(LL_EXTI_LINE_{num}); // Why Falling? Button press = HIGH to LOW
@@ -114,9 +115,10 @@ void EXTI{irq}_IRQHandler(void) {{
     # Main Logic
     if "stepper" in desc_lower:
         includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
+        apb1_bus = 'APB1_GRP1'
         main_logic = f""" // Stepper Motor TIM2 - 1000Hz Pulse
-  LL_{'APB1_GRP1' if mcu['family']=='F1' else 'APB1_GRP1'}_EnableClock(LL_{'APB1_GRP1' if mcu['family']=='F1' else 'APB1_GRP1'}_PERIPH_TIM2);
-  /* Timer Freq = 72MHz/7200=10kHz. ARR=10-1 -> 10kHz/10=1kHz pulse - Why 71? (7199+1)=7200. 72M/7200=10kHz */
+  LL_{apb1_bus}_EnableClock(LL_{apb1_bus}_PERIPH_TIM2);
+  /* Timer Freq = 72MHz/7200=10kHz. ARR=9 -> 10kHz/10=1kHz pulse - Why 7199? (7199+1)=7200. 72M/7200=10kHz */
   LL_TIM_SetPrescaler(TIM2, 7199);
   LL_TIM_SetAutoReload(TIM2, 9); // 10kHz/10 = 1kHz = 1000 steps/sec
   LL_TIM_EnableIT_UPDATE(TIM2); // Why IT? Interrupt pe pulse bhejni hai
@@ -128,14 +130,15 @@ void EXTI{irq}_IRQHandler(void) {{
 void TIM2_IRQHandler(void) {
   if(LL_TIM_IsActiveFlag_UPDATE(TIM2)) {
     LL_TIM_ClearFlag_UPDATE(TIM2);
-    // LL_GPIO_TogglePin(GPIOA, LL_GPIO_PIN_8); // STEP pin toggle
+    // LL_GPIO_TogglePin(GPIOA, LL_GPIO_PIN_8); // STEP pin toggle - apna pin lagao
   }
 }"""
 
     elif "counter" in desc_lower:
         includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
+        apb1_bus = 'APB1_GRP1'
         main_logic = f""" // 32-bit Up Counter - 1us Resolution
-  LL_{'APB1_GRP1' if mcu['family']=='F1' else 'APB1_GRP1'}_EnableClock(LL_{'APB1_GRP1' if mcu['family']=='F1' else 'APB1_GRP1'}_PERIPH_TIM2);
+  LL_{apb1_bus}_EnableClock(LL_{apb1_bus}_PERIPH_TIM2);
   /* Prescaler 72-1 = 1MHz - Why 71? 72MHz/(71+1)=1MHz. Har tick = 1us */
   LL_TIM_SetPrescaler(TIM2, 71);
   LL_TIM_SetAutoReload(TIM2, 0xFFFFFFFF); // Why 0xFFFFFFFF? 32-bit max. 71min tak count
@@ -208,7 +211,7 @@ st.markdown("**Controller + Project Likho → LL Code + Hardware Wiring Mil Jaye
 col1, col2 = st.columns([1,2])
 with col1:
     mcu_select = st.selectbox("1. STM32 Controller", ["STM32F103C8T6", "STM32F401RE", "STM32F407VG"])
-with col2:
+with c2:
     project_title = st.text_input("2. Project Ka Naam", "Stepper Motor with Button Control")
 
 st.markdown("### 3. Hardware Pins Aur Kaam")
@@ -235,3 +238,5 @@ if st.button("🚀 GENERATE COMPLETE PROJECT", type="primary", use_container_wid
 
 st.markdown("---")
 st.caption("100% Offline | No AI Training | No HuggingFace | Rule-Based Professional Code | GitHub Ready")
+
+
