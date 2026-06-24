@@ -1,7 +1,7 @@
 import streamlit as st
 import re
 
-st.set_page_config(page_title="STM32 Universal CodeGen", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="STM32 Universal CodeGenerator", layout="wide", page_icon="⚡")
 
 # ========== Saare STM32 Controllers + Unke Default Pins ==========
 MCU = {
