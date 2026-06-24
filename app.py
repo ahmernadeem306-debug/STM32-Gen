@@ -155,8 +155,8 @@ Zaroori Baat:
     return final_code, hw
 
 # ========== STREAMLIT APP ==========
-st.title("⚡ STM32 Universal Generator - Elif Khatam")
-st.markdown("**Ab kuch bhi likho. `elif` ki zaroorat nahi. Code + Wiring khud ban jaye ga**")
+st.title("⚡ STM32 Universal Generator ")
+st.markdown("**Code + Wiring khud ban jaye ga**")
 
 mcu_select = st.selectbox("1. STM32 Controller", list(MCU.keys()))
 st.info(f"Is MCU ke Auto Pins: I2C={MCU[mcu_select]['pins']['I2C1_SDA']}, UART={MCU[mcu_select]['pins'].get('USART1_TX','USART2_TX')}")
