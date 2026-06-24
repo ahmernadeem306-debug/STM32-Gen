@@ -87,11 +87,16 @@ def generate_code(mcu_name, project_desc, pins_text):
   LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
             wiring.append(f"Button: {pin} -> Tactile Button -> GND")
 
-        elif "stepper" in func.lower() or "pwm" in func.lower():
-            gpio_code += f""" /* {pin} PWM Output - Why AF? Timer direct pin control kare ga hardware se */
+        elif "stepper" in func.lower() or "pwm" in func.lower() or "step" in func.lower() or "dir" in func.lower():
+            gpio_code += f""" /* {pin} PWM/Stepper Output - Why AF? Timer direct pin control kare ga hardware se */
   LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_ALTERNATE);
   LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_HIGH);\n"""
-            wiring.append(f"Stepper Driver: {pin} -> STEP pin of A4988/DRV8825 | 5V->VDD, GND->GND")
+            if "step" in func.lower():
+                wiring.append(f"Stepper Driver: {pin} -> STEP pin of A4988/DRV8825")
+            elif "dir" in func.lower():
+                wiring.append(f"Stepper Driver: {pin} -> DIR pin of A4988/DRV8825")
+            else:
+                wiring.append(f"Motor Driver: {pin} -> PWM Input of L298N/BTS7960")
             includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
 
         if "interrupt" in desc_lower and "button" in func.lower():
@@ -211,7 +216,7 @@ st.markdown("**Controller + Project Likho → LL Code + Hardware Wiring Mil Jaye
 col1, col2 = st.columns([1,2])
 with col1:
     mcu_select = st.selectbox("1. STM32 Controller", ["STM32F103C8T6", "STM32F401RE", "STM32F407VG"])
-with c2:
+with col2: # <-- Yahan c2 se col2 kar diya. Yehi bug tha.
     project_title = st.text_input("2. Project Ka Naam", "Stepper Motor with Button Control")
 
 st.markdown("### 3. Hardware Pins Aur Kaam")
@@ -238,5 +243,3 @@ if st.button("🚀 GENERATE COMPLETE PROJECT", type="primary", use_container_wid
 
 st.markdown("---")
 st.caption("100% Offline | No AI Training | No HuggingFace | Rule-Based Professional Code | GitHub Ready")
-
-
