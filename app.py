@@ -3,42 +3,25 @@ import re
 
 st.set_page_config(page_title="STM32 Pro CodeGen", layout="wide", page_icon="⚡")
 
-# ========== STM32 LL CODE DATABASE ==========
 MCU_DATABASE = {
     "STM32F103C8T6": {
         "freq": "72MHz", "family": "F1",
-        "clock_code": """ LL_RCC_HSE_Enable(); // Why HSE? External 8MHz crystal 50ppm accurate. HSI 1% error hota
+        "clock_code": """ LL_RCC_HSE_Enable(); // Why HSE? External 8MHz crystal 50ppm accurate
   while(LL_RCC_HSE_IsReady()!= 1) {};
-  /* PLL: 8MHz * 9 = 72MHz - Why 9? 8*9=72MHz max for F103. Datasheet RM0008 Page 74 */
   LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSE_DIV_1, LL_RCC_PLL_MUL_9);
   LL_RCC_PLL_Enable();
   while(LL_RCC_PLL_IsReady()!= 1) {};
-  /* APB1=36MHz - Why DIV2? APB1 ka max 36MHz hai. 72/2=36MHz. Timers ko x2 milta hai */
-  LL_RCC_SetAPB1Prescaler(LL_RCC_APB1_DIV_2);
+  LL_RCC_SetAPB1Prescaler(LL_RCC_APB1_DIV_2); // Why DIV2? APB1 max 36MHz
   LL_RCC_SetSysClkSource(LL_RCC_SYS_CLKSOURCE_PLL);""",
         "clock_tree": "HSE 8MHz Crystal -> PLL x9 -> SYSCLK 72MHz -> AHB 72MHz -> APB1 36MHz -> APB2 72MHz",
         "includes": ["stm32f1xx_ll_bus.h", "stm32f1xx_ll_rcc.h", "stm32f1xx_ll_gpio.h", "stm32f1xx_ll_utils.h"]
-    },
-    "STM32F401RE": {
-        "freq": "84MHz", "family": "F4",
-        "clock_code": """ LL_RCC_HSI_Enable(); // Why HSI? Nucleo F401 pe crystal nahi laga hota
-  while(LL_RCC_HSI_IsReady()!= 1) {};
-  /* PLL: 16/8*84/2=84MHz - Why? 16MHz/8=2MHz PFD. VCO=2*84=168MHz. /2=84MHz SYSCLK */
-  LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSI, LL_RCC_PLLM_DIV_8, 84, LL_RCC_PLLP_DIV_2);
-  LL_RCC_PLL_Enable();
-  while(LL_RCC_PLL_IsReady()!= 1) {};
-  /* Flash 2WS - Why? 84MHz=11.9ns per cycle. Flash 30ns leta hai. 2WS=3 cycles=35.7ns OK */
-  LL_FLASH_SetLatency(LL_FLASH_LATENCY_2);
-  LL_RCC_SetSysClkSource(LL_RCC_SYS_CLKSOURCE_PLL);""",
-        "clock_tree": "HSI 16MHz -> /8 -> *84 -> /2 = 84MHz SYSCLK. Flash Latency 2WS zaroori",
-        "includes": ["stm32f4xx_ll_bus.h", "stm32f4xx_ll_rcc.h", "stm32f4xx_ll_gpio.h", "stm32f4xx_ll_utils.h"]
     }
 }
 
 def parse_pins(text):
-    """Extract pins from text like 'LED on PC13, Button on PA0'"""
     pins = {}
-    pattern = r'(LED|Button|Stepper|ADC|PWM|UART|DIR|STEP|Input|Output)[\s\w]*on\s+(P[A-G]\d+)'
+    # FIXED: I2C, SDA, SCL, UART, TX, RX sab add kiye
+    pattern = r'(LED|Button|Stepper|ADC|PWM|UART|I2C|SDA|SCL|TX|RX|DIR|STEP|Input|Output)[\s\w]*on\s+(P[A-G]\d+)'
     matches = re.findall(pattern, text, re.IGNORECASE)
     for func, pin in matches:
         pins[pin.upper()] = func
@@ -52,9 +35,6 @@ def get_pin_info(pin):
     return port, num, irq
 
 def generate_code(mcu_name, project_desc, pins_text):
-    if mcu_name not in MCU_DATABASE:
-        return "Error: Sirf STM32F103C8T6 ya STM32F401RE support hai abhi", ""
-
     mcu = MCU_DATABASE[mcu_name]
     pins = parse_pins(pins_text)
     desc_lower = project_desc.lower()
@@ -64,114 +44,133 @@ def generate_code(mcu_name, project_desc, pins_text):
     gpio_code = ""
     isr_code = ""
     wiring = []
+    main_logic = ""
 
-    # Clock Setup
-    main_code += f" {mcu['clock_code']}\n LL_Init1msTick({mcu['freq'].replace('MHz','000000')}); // Why? 1ms SysTick ke liye\n\n"
+    # FIXED: GPIO_Config aur SystemClock_Config call add ki
+    main_code += f" SystemClock_Config();\n GPIO_Config();\n LL_Init1msTick({mcu['freq'].replace('MHz','000000')}); // Why? 1ms SysTick\n\n"
 
-    # GPIO Setup
     bus = "AHB1_GRP1" if mcu["family"] == "F4" else "APB2_GRP1"
+
+    # GPIO + Wiring Generation
     for pin, func in pins.items():
         port, num, irq = get_pin_info(pin)
-        gpio_code += f" LL_{bus}_EnableClock(LL_{bus}_PERIPH_GPIO{port}); // Why? Peripherals OFF hote by default. 2mA save\n"
+        gpio_code += f" LL_{bus}_EnableClock(LL_{bus}_PERIPH_GPIO{port});\n"
 
-        if "led" in func.lower() or "output" in func.lower():
-            gpio_code += f""" /* {pin} Output - Why 2MHz Speed? Low freq=kam EMI. LED ke liye 50MHz zaroorat nahi */
+        if "led" in func.lower():
+            gpio_code += f""" /* {pin} Output */
   LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_OUTPUT);
-  LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_LOW);
-  LL_GPIO_SetPinOutputType(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_OUTPUT_PUSHPULL);\n"""
-            wiring.append(f"LED Circuit: {pin} -> 220Ω Resistor -> LED Anode -> LED Cathode -> GND")
+  LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_LOW);\n"""
+            wiring.append(f"LED Circuit: {pin} -> 220Ω -> LED -> GND")
 
-        elif "button" in func.lower() or "input" in func.lower():
-            gpio_code += f""" /* {pin} Input Pull-up - Why Pull-up? External 10k resistor ki zaroorat nahi. Idle HIGH */
+        elif "button" in func.lower():
+            gpio_code += f""" /* {pin} Input Pull-up */
   LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_INPUT);
   LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
             wiring.append(f"Button: {pin} -> Tactile Button -> GND")
 
-        elif "stepper" in func.lower() or "pwm" in func.lower() or "step" in func.lower() or "dir" in func.lower():
-            gpio_code += f""" /* {pin} PWM/Stepper Output - Why AF? Timer direct pin control kare ga hardware se */
+        elif "sda" in func.lower():
+            gpio_code += f""" /* {pin} I2C SDA - Why AF_OD? I2C spec requires open-drain + pull-up */
+  LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_ALTERNATE);
+  LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_HIGH);
+  LL_GPIO_SetPinOutputType(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_OUTPUT_OPENDRAIN);
+  LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
+            wiring.append(f"I2C SDA: {pin} -> MPU6050 SDA | 4.7kΩ Pull-up to 3.3V Zaroori")
+            includes.append(f"stm32{mcu['family'].lower()}xx_ll_i2c.h")
+
+        elif "scl" in func.lower():
+            gpio_code += f""" /* {pin} I2C SCL - Why AF_OD? Clock line bhi open-drain */
+  LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_ALTERNATE);
+  LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_HIGH);
+  LL_GPIO_SetPinOutputType(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_OUTPUT_OPENDRAIN);
+  LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
+            wiring.append(f"I2C SCL: {pin} -> MPU6050 SCL | 4.7kΩ Pull-up to 3.3V Zaroori")
+            includes.append(f"stm32{mcu['family'].lower()}xx_ll_i2c.h")
+
+        elif "tx" in func.lower():
+            gpio_code += f""" /* {pin} UART TX - Why AF_PP? Push-pull for TX */
   LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_ALTERNATE);
   LL_GPIO_SetPinSpeed(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_SPEED_FREQ_HIGH);\n"""
-            if "step" in func.lower():
-                wiring.append(f"Stepper Driver: {pin} -> STEP pin of A4988/DRV8825")
-            elif "dir" in func.lower():
-                wiring.append(f"Stepper Driver: {pin} -> DIR pin of A4988/DRV8825")
-            else:
-                wiring.append(f"Motor Driver: {pin} -> PWM Input of L298N/BTS7960")
-            includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
+            wiring.append(f"UART TX: {pin} -> FTDI RXD / USB-TTL RX Pin")
+            includes.append(f"stm32{mcu['family'].lower()}xx_ll_usart.h")
 
-        if "interrupt" in desc_lower and "button" in func.lower():
-            apb2_bus = 'APB2_GRP1'
-            gpio_code += f""" /* EXTI {num} - Why SYSCFG? GPIO ko EXTI line se connect karta hai */
-  LL_{apb2_bus}_EnableClock(LL_{apb2_bus}_PERIPH_SYSCFG);
-  LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORT{port}, LL_SYSCFG_EXTI_LINE{num});
-  LL_EXTI_EnableIT_0_31(LL_EXTI_LINE_{num}); // Why IT? Interrupt mode enable
-  LL_EXTI_EnableFallingTrig_0_31(LL_EXTI_LINE_{num}); // Why Falling? Button press = HIGH to LOW
-  NVIC_SetPriority(EXTI{irq}_IRQn, 0); // Why 0? Highest priority for real-time response
-  NVIC_EnableIRQ(EXTI{irq}_IRQn);\n"""
-            includes.append(f"stm32{mcu['family'].lower()}xx_ll_exti.h")
-            isr_code += f"""
-void EXTI{irq}_IRQHandler(void) {{
-  if(LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_{num})) {{
-    LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_{num}); // Why clear? ISR dobara na chale is liye
-    // Yahan counter increment ya direction toggle karo
-  }}
-}}"""
+        elif "rx" in func.lower():
+            gpio_code += f""" /* {pin} UART RX - Why Input? Data receive */
+  LL_GPIO_SetPinMode(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_MODE_ALTERNATE);
+  LL_GPIO_SetPinPull(GPIO{port}, LL_GPIO_PIN_{num}, LL_GPIO_PULL_UP);\n"""
+            wiring.append(f"UART RX: {pin} -> FTDI TXD / USB-TTL TX Pin")
+            includes.append(f"stm32{mcu['family'].lower()}xx_ll_usart.h")
 
-    # Main Logic
-    if "stepper" in desc_lower:
-        includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
-        apb1_bus = 'APB1_GRP1'
-        main_logic = f""" // Stepper Motor TIM2 - 1000Hz Pulse
-  LL_{apb1_bus}_EnableClock(LL_{apb1_bus}_PERIPH_TIM2);
-  /* Timer Freq = 72MHz/7200=10kHz. ARR=9 -> 10kHz/10=1kHz pulse - Why 7199? (7199+1)=7200. 72M/7200=10kHz */
-  LL_TIM_SetPrescaler(TIM2, 7199);
-  LL_TIM_SetAutoReload(TIM2, 9); // 10kHz/10 = 1kHz = 1000 steps/sec
-  LL_TIM_EnableIT_UPDATE(TIM2); // Why IT? Interrupt pe pulse bhejni hai
-  LL_TIM_EnableCounter(TIM2);
-  NVIC_EnableIRQ(TIM2_IRQn);
+    # FIXED: I2C + UART Logic Ab Hamesha Chale Ga
+    if "i2c" in desc_lower or "mpu6050" in desc_lower or "sda" in pins_text.lower():
+        includes.append(f"stm32{mcu['family'].lower()}xx_ll_i2c.h")
+        includes.append(f"stm32{mcu['family'].lower()}xx_ll_usart.h")
+        main_logic = """ // I2C1 + UART1 Init
+  LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_I2C1); // Why APB1? I2C1 APB1 bus pe hai
+  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_USART1); // Why APB2? USART1 APB2 pe 72MHz
 
-  while(1) {{ __WFI(); }} // Why WFI? CPU sleep. Sirf interrupt pe wake. Power save"""
-        isr_code += """
-void TIM2_IRQHandler(void) {
-  if(LL_TIM_IsActiveFlag_UPDATE(TIM2)) {
-    LL_TIM_ClearFlag_UPDATE(TIM2);
-    // LL_GPIO_TogglePin(GPIOA, LL_GPIO_PIN_8); // STEP pin toggle - apna pin lagao
-  }
-}"""
+  // I2C 100kHz - Why 100kHz? MPU6050 400kHz support but 100kHz stable for long wires
+  LL_I2C_Disable(I2C1);
+  LL_I2C_SetTiming(I2C1, 0x00201D2B); // Why 0x00201D2B? 72MHz/(1+1)*(0xD2+0xC3+2) ≈ 100kHz
+  LL_I2C_Enable(I2C1);
 
-    elif "counter" in desc_lower:
-        includes.append(f"stm32{mcu['family'].lower()}xx_ll_tim.h")
-        apb1_bus = 'APB1_GRP1'
-        main_logic = f""" // 32-bit Up Counter - 1us Resolution
-  LL_{apb1_bus}_EnableClock(LL_{apb1_bus}_PERIPH_TIM2);
-  /* Prescaler 72-1 = 1MHz - Why 71? 72MHz/(71+1)=1MHz. Har tick = 1us */
-  LL_TIM_SetPrescaler(TIM2, 71);
-  LL_TIM_SetAutoReload(TIM2, 0xFFFFFFFF); // Why 0xFFFFFFFF? 32-bit max. 71min tak count
-  LL_TIM_EnableCounter(TIM2);
+  // UART 115200 - Why 115200? PC terminal standard. 72MHz/115200=625
+  LL_USART_SetBaudRate(USART1, 72000000, LL_USART_OVERSAMPLING_16, 115200);
+  LL_USART_EnableDirectionTx(USART1);
+  LL_USART_Enable(USART1);
 
-  uint32_t counter_value = 0;
-  while(1) {{
-    counter_value = LL_TIM_GetCounter(TIM2); // Current microseconds
-    LL_mDelay(1000);
-  }}"""
+  // MPU6050 Wake Up - Why 0x6B? PWR_MGMT_1 register. Writing 0x00 wakes it up
+  LL_I2C_HandleTransfer(I2C1, 0x68<<1, LL_I2C_ADDRSLAVE_7BIT, 2, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_START_WRITE);
+  while(!LL_I2C_IsActiveFlag_TXIS(I2C1)) {}; // Why wait? TX buffer ready hone tak
+  LL_I2C_TransmitData8(I2C1, 0x6B);
+  while(!LL_I2C_IsActiveFlag_TXIS(I2C1)) {};
+  LL_I2C_TransmitData8(I2C1, 0x00);
 
-    elif "blink" in desc_lower:
-        led_pins = [p for p, f in pins.items() if "led" in f.lower()]
-        if led_pins:
-            port, num, _ = get_pin_info(led_pins[0])
-            main_logic = f""" while(1) {{
-    LL_GPIO_TogglePin(GPIO{port}, LL_GPIO_PIN_{num}); // Why LL? 1 CPU cycle. HAL=12 cycles
-    LL_mDelay(500); // 500ms ON, 500ms OFF = 1Hz blink
-  }}"""
+  uint8_t data[6];
+  while(1) {
+    // Read Gyro XYZ from 0x43 - Why 0x43? MPU6050 datasheet GYRO_XOUT_H register
+    LL_I2C_HandleTransfer(I2C1, 0x68<<1, LL_I2C_ADDRSLAVE_7BIT, 1, LL_I2C_MODE_SOFTEND, LL_I2C_GENERATE_START_WRITE);
+    while(!LL_I2C_IsActiveFlag_TXIS(I2C1)) {};
+    LL_I2C_TransmitData8(I2C1, 0x43);
+
+    LL_I2C_HandleTransfer(I2C1, 0x68<<1, LL_I2C_ADDRSLAVE_7BIT, 6, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_RESTART_READ);
+    for(int i=0; i<6; i++) {
+      while(!LL_I2C_IsActiveFlag_RXNE(I2C1)) {}; // Why RXNE? Data received in buffer
+      data[i] = LL_I2C_ReceiveData8(I2C1);
+    }
+
+    // Send via UART - Why check TXE? TX buffer empty hona chahiye
+    for(int i=0; i<6; i++) {
+      while(!LL_USART_IsActiveFlag_TXE(USART1)) {};
+      LL_USART_TransmitData8(USART1, data[i]);
+    }
+    LL_mDelay(10); // 100Hz = 10ms delay
+  }"""
+        wiring.append("Common GND: STM32 GND -> MPU6050 GND -> FTDI GND")
+        wiring.append("Power: STM32 3.3V -> MPU6050 VCC")
+
+    elif "uart" in desc_lower:
+        includes.append(f"stm32{mcu['family'].lower()}xx_ll_usart.h")
+        main_logic = """ // UART Echo 115200
+  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_USART1);
+  LL_USART_SetBaudRate(USART1, 72000000, LL_USART_OVERSAMPLING_16, 115200);
+  LL_USART_EnableDirectionTx(USART1);
+  LL_USART_EnableDirectionRx(USART1);
+  LL_USART_Enable(USART1);
+  while(1) {
+    if(LL_USART_IsActiveFlag_RXNE(USART1)) { // Why RXNE? Byte received
+      uint8_t byte = LL_USART_ReceiveData8(USART1);
+      while(!LL_USART_IsActiveFlag_TXE(USART1)) {}; // Why TXE? Wait if buffer full
+      LL_USART_TransmitData8(USART1, byte); // Echo back
+    }
+  }"""
+
     else:
         main_logic = " while(1) {\n // Apna logic yahan likho\n }"
 
-    # Build Final Code
     final_code = f"""/*
  * Project: {project_desc}
  * MCU: {mcu_name} @ {mcu['freq']}
  * Code Generator: STM32 LL Pro
- * Why LL Drivers? 12x faster GPIO than HAL. 3x smaller flash. Industry mein yahi use hota.
  */
 
 {chr(10).join([f'#include "{inc}"' for inc in list(dict.fromkeys(includes))])}
@@ -194,6 +193,9 @@ void SystemClock_Config(void) {{
 """
 
     wiring_text = "\n".join([f"{i+1}. {w}" for i, w in enumerate(wiring)])
+    if not wiring:
+        wiring_text = "1. Pins format check karo: 'I2C SDA on PB7, UART TX on PA9'"
+
     hardware = f"""HARDWARE WIRING DIAGRAM:
 {wiring_text}
 
@@ -204,7 +206,6 @@ STM32CubeIDE Settings:
 1. New Project -> {mcu_name}
 2. Pinout & Configuration -> System Core -> GPIO
 3. Project Manager -> Advanced Settings -> Driver Selector -> LL
-4. Code Generator -> Generated files -> Generate peripheral initialization as a pair of.c/.h
 """
 
     return final_code, hardware
@@ -215,16 +216,16 @@ st.markdown("**Controller + Project Likho → LL Code + Hardware Wiring Mil Jaye
 
 col1, col2 = st.columns([1,2])
 with col1:
-    mcu_select = st.selectbox("1. STM32 Controller", ["STM32F103C8T6", "STM32F401RE", "STM32F407VG"])
-with col2: # <-- Yahan c2 se col2 kar diya. Yehi bug tha.
-    project_title = st.text_input("2. Project Ka Naam", "Stepper Motor with Button Control")
+    mcu_select = st.selectbox("1. STM32 Controller", ["STM32F103C8T6", "STM32F401RE"])
+with col2:
+    project_title = st.text_input("2. Project Ka Naam", "I2C MPU6050 + UART")
 
 st.markdown("### 3. Hardware Pins Aur Kaam")
-pins_text = st.text_area("Format: LED on PC13, Button on PA0",
-"LED on PC13, Button on PA0, Stepper STEP on PA8, Stepper DIR on PA9", height=80)
+pins_text = st.text_area("Format: I2C SDA on PB7, UART TX on PA9",
+"I2C SDA on PB7, I2C SCL on PB6, UART TX on PA9, UART RX on PA10", height=80)
 
 project_desc = st.text_area("4. Project Detail Mein Likho - Kya Banana Hai?",
-"TIM2 se 1000Hz stepper pulse generate karo. Button dabao to direction change ho. Interrupt use karo. Har register config explain karo kyun use ki.", height=120)
+"I2C se MPU6050 ka data padho 100Hz. UART pe 115200 baud se PC ko bhejo.", height=120)
 
 if st.button("🚀 GENERATE COMPLETE PROJECT", type="primary", use_container_width=True):
     if pins_text and project_desc:
@@ -240,6 +241,3 @@ if st.button("🚀 GENERATE COMPLETE PROJECT", type="primary", use_container_wid
                 st.code(hw, language="text")
     else:
         st.error("Pins aur Project Description likho")
-
-st.markdown("---")
-st.caption("100% Offline | No AI Training | No HuggingFace | Rule-Based Professional Code | GitHub Ready")
